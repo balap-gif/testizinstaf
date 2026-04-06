@@ -501,51 +501,45 @@ function attachListeners(){
   db.ref("activeDate").on("value",function(snap){storedActiveDate=snap.val()||"";});
 }
 
-/* ===== INIT DENGAN STEP-BY-STEP LOADING ===== */
+/* ===== INIT - LANGSUNG CEK FIREBASE ===== */
 async function initializeApp(){
   var stepsEl=document.getElementById("loadingSteps");
   stepsEl.innerHTML=[
-    {id:"net",label:"Koneksi internet"},
     {id:"fb",label:"Firebase Realtime Database"},
     {id:"data",label:"Data staf"},
-    {id:"ready",label:"Siap"}
+    {id:"listen",label:"Listener realtime"},
+    {id:"ready",label:"Siap digunakan"}
   ].map(function(s){return '<div class="loading-step" id="step_'+s.id+'"><span class="ls-icon wait"><i class="fas fa-circle"></i></span><span>'+s.label+'</span></div>';}).join("");
 
-  /* STEP 1: Cek koneksi internet */
-  setStep("net","spin");
-  try{
-    var ctrl=new AbortController();
-    var timer=setTimeout(function(){ctrl.abort();},5000);
-    await fetch("https://firebasedatabase.app",{mode:"no-cors",signal:ctrl.signal,cache:"no-store"});
-    clearTimeout(timer);
-    setStep("net","ok");
-  }catch(e1){
-    setStep("net","fail");
-    showFatalError("Tidak ada koneksi internet atau domain Firebase diblokir oleh jaringan Anda (WiFi kantor/school). Coba gunakan WiFi/VPN lain lalu refresh.");
-    return;
-  }
-
-  /* STEP 2: Cek Firebase */
+  /* STEP 1: Cek Firebase langsung (skip cek internet yang tidak reliable) */
   setStep("fb","spin");
   try{
-    var snap=await Promise.race([
+    await Promise.race([
       db.ref(".info/connected").once("value"),
-      new Promise(function(_,rej){setTimeout(function(){rej(new Error("Firebase timeout 8s"));},8000);})
+      new Promise(function(_,rej){setTimeout(function(){rej(new Error("Timeout 10 detik"));},10000);})
     ]);
     setStep("fb","ok");
-  }catch(e2){
+  }catch(e1){
     setStep("fb","fail");
-    showFatalError("Firebase tidak bisa diakses. Kemungkinan:<br>- Domain <code>firebasedatabase.app</code> diblokir jaringan<br>- Firebase Rules menolak akses<br>- Coba gunakan VPN atau jaringan lain");
+    showFatalError(
+      "Firebase tidak bisa diakses dalam 10 detik.<br><br>"+
+      "Kemungkinan penyebab:<br>"+
+      "<code>1.</code> Domain <b>firebasedatabase.app</b> diblokir oleh jaringan Anda<br>"+
+      "<code>2.</code> Firebase Rules tidak mengizinkan baca<br>"+
+      "<code>3.</code> Koneksi internet benar-benar mati<br><br>"+
+      "Coba: gunakan WiFi/VPN lain, lalu refresh halaman."
+    );
     return;
   }
 
-  /* STEP 3: Baca data staf */
+  /* STEP 2: Baca data staf */
   setStep("data","spin");
   try{
     var stafSnap=await Promise.race([
       db.ref("staf").once("value"),
-      new Promise(function(_,rej){setTimeout(function(){rej(new Error("Data timeout 8s"));},8000);})
+      new Promise(function(_,rej){setTimeout(function(){rej(new Error("Timeout 10 detik"));},10000);})
     ]);
+
     if(!stafSnap.exists()){
       document.getElementById("loadingText").textContent="Menginisialisasi data awal...";
       var ss={},jk={},jc={};
@@ -554,25 +548,51 @@ async function initializeApp(){
       for(var k=0;k<DEFAULT_JD_CS.length;k++)jc[k]=DEFAULT_JD_CS[k];
       await db.ref().update({staf:ss,jdKasir:jk,jdCs:jc,settings:DEFAULT_SETTINGS});
     }
+
     try{
       var sSnap=await db.ref("settings").once("value");
       if(!sSnap.exists())await db.ref("settings").set(DEFAULT_SETTINGS);
-    }catch(e3){}
+    }catch(e2){}
     setStep("data","ok");
-  }catch(e3){
+  }catch(e2){
     setStep("data","fail");
-    showFatalError("Gagal membaca data staf: "+e3.message+"<br>Cek Firebase Console > Realtime Database > Rules.");
+    showFatalError(
+      "Gagal membaca data: "+e2.message+"<br><br>"+
+      "Buka <b>Firebase Console</b> → <b>Realtime Database</b> → tab <b>Rules</b>,<br>"+
+      "pastikan isinya:<br>"+
+      "<code style='font-size:11px'>{\"rules\":{\".read\":true,\".write\":true}}</code>"
+    );
     return;
   }
 
-  /* STEP 4: Attach & tunggu */
-  setStep("ready","spin");
-  attachListeners();
-  await new Promise(function(resolve){var check=setInterval(function(){if(daftarStaf.length>0){clearInterval(check);resolve();}},100);setTimeout(function(){clearInterval(check);resolve();},4000);});
-  if(daftarStaf.length===0){showFatalError("Data staf kosong setelah load. Coba refresh.");return;}
-  setStep("ready","ok");
+  /* STEP 3: Attach listener */
+  setStep("listen","spin");
+  try{
+    attachListeners();
+    await new Promise(function(resolve){
+      var check=setInterval(function(){
+        if(daftarStaf.length>0){clearInterval(check);resolve();}
+      },100);
+      setTimeout(function(){clearInterval(check);resolve();},5000);
+    });
+    if(daftarStaf.length===0){
+      setStep("listen","fail");
+      showFatalError("Listener aktif tapi data staf kosong. Cek Firebase Console.");
+      return;
+    }
+    setStep("listen","ok");
+  }catch(e3){
+    setStep("listen","fail");
+    showFatalError("Gagal attach listener: "+e3.message);
+    return;
+  }
 
-  try{var dateSnap=await db.ref("activeDate").once("value");storedActiveDate=dateSnap.val()||"";}catch(e4){storedActiveDate="";}
+  /* STEP 4: Selesai */
+  setStep("ready","ok");
+  try{
+    var dateSnap=await db.ref("activeDate").once("value");
+    storedActiveDate=dateSnap.val()||"";
+  }catch(e4){storedActiveDate="";}
   checkDayChange();
   setInterval(checkDayChange,30000);
 
